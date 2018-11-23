@@ -16,6 +16,7 @@ use Magento\Quote\Model\Quote\Address;
 use Magento\Quote\Model\Quote\Item;
 use Magento\Sales\Api\Data\OrderAddressInterface;
 use Magento\Sales\Model\Order;
+use Magento\Store\Model\StoreManagerInterface;
 
 /**
  * Order create model
@@ -244,6 +245,11 @@ class Create extends \Magento\Framework\DataObject implements \Magento\Checkout\
     private $dataObjectConverter;
 
     /**
+     * @var StoreManagerInterface
+     */
+    private $storeManager;
+
+    /**
      * @param \Magento\Framework\ObjectManagerInterface $objectManager
      * @param \Magento\Framework\Event\ManagerInterface $eventManager
      * @param \Magento\Framework\Registry $coreRegistry
@@ -274,6 +280,7 @@ class Create extends \Magento\Framework\DataObject implements \Magento\Checkout\
      * @param array $data
      * @param \Magento\Framework\Serialize\Serializer\Json|null $serializer
      * @param ExtensibleDataObjectConverter|null $dataObjectConverter
+     * @param StoreManagerInterface $storeManager
      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
      */
     public function __construct(
@@ -306,7 +313,8 @@ class Create extends \Magento\Framework\DataObject implements \Magento\Checkout\
         \Magento\Quote\Model\QuoteFactory $quoteFactory,
         array $data = [],
         \Magento\Framework\Serialize\Serializer\Json $serializer = null,
-        ExtensibleDataObjectConverter $dataObjectConverter = null
+        ExtensibleDataObjectConverter $dataObjectConverter = null,
+        StoreManagerInterface $storeManager = null
     ) {
         $this->_objectManager = $objectManager;
         $this->_eventManager = $eventManager;
@@ -340,6 +348,7 @@ class Create extends \Magento\Framework\DataObject implements \Magento\Checkout\
         parent::__construct($data);
         $this->dataObjectConverter = $dataObjectConverter ?: ObjectManager::getInstance()
             ->get(ExtensibleDataObjectConverter::class);
+        $this->storeManager = $storeManager ?: ObjectManager::getInstance()->get(StoreManagerInterface::class);
     }
 
     /**
@@ -417,7 +426,8 @@ class Create extends \Magento\Framework\DataObject implements \Magento\Checkout\
 
     /**
      * Recollect totals for customer cart.
-     * Set recollect totals flag for quote
+     *
+     * Set recollect totals flag for quote.
      *
      * @return $this
      */
@@ -681,7 +691,7 @@ class Create extends \Magento\Framework\DataObject implements \Magento\Checkout\
      */
     public function getCustomerWishlist($cacheReload = false)
     {
-        if (!is_null($this->_wishlist) && !$cacheReload) {
+        if (($this->_wishlist !== null) && !$cacheReload) {
             return $this->_wishlist;
         }
 
@@ -708,16 +718,17 @@ class Create extends \Magento\Framework\DataObject implements \Magento\Checkout\
      */
     public function getCustomerCart()
     {
-        if (!is_null($this->_cart)) {
+        if ($this->_cart !== null) {
             return $this->_cart;
         }
 
         $this->_cart = $this->quoteFactory->create();
 
         $customerId = (int)$this->getSession()->getCustomerId();
+        $storeId = (int)$this->getSession()->getStoreId();
         if ($customerId) {
             try {
-                $this->_cart = $this->quoteRepository->getForCustomer($customerId);
+                $this->_cart = $this->quoteRepository->getForCustomer($customerId, [$storeId]);
             } catch (\Magento\Framework\Exception\NoSuchEntityException $e) {
                 $this->_cart->setStore($this->getSession()->getStore());
                 $customerData = $this->customerRepository->getById($customerId);
@@ -736,7 +747,7 @@ class Create extends \Magento\Framework\DataObject implements \Magento\Checkout\
      */
     public function getCustomerCompareList()
     {
-        if (!is_null($this->_compareList)) {
+        if ($this->_compareList !== null) {
             return $this->_compareList;
         }
         $customerId = (int)$this->getSession()->getCustomerId();
@@ -807,7 +818,7 @@ class Create extends \Magento\Framework\DataObject implements \Magento\Checkout\
                     break;
                 case 'cart':
                     $cart = $this->getCustomerCart();
-                    if ($cart && is_null($item->getOptionByCode('additional_options'))) {
+                    if ($cart && ($item->getOptionByCode('additional_options') === null)) {
                         //options and info buy request
                         $product = $this->_objectManager->create(
                             \Magento\Catalog\Model\Product::class
@@ -1326,6 +1337,7 @@ class Create extends \Magento\Framework\DataObject implements \Magento\Checkout\
 
     /**
      * Set and validate Quote address
+     *
      * All errors added to _errors
      *
      * @param \Magento\Quote\Model\Quote\Address $address
@@ -1529,6 +1541,8 @@ class Create extends \Magento\Framework\DataObject implements \Magento\Checkout\
      */
     public function collectShippingRates()
     {
+        $store = $this->getQuote()->getStore();
+        $this->storeManager->setCurrentStore($store);
         $this->getQuote()->getShippingAddress()->setCollectShippingRates(true);
         $this->collectRates();
 
@@ -1727,7 +1741,7 @@ class Create extends \Magento\Framework\DataObject implements \Magento\Checkout\
         }
         $data = $form->restoreData($data);
         foreach ($data as $key => $value) {
-            if (!is_null($value)) {
+            if ($value !== null) {
                 unset($data[$key]);
             }
         }
@@ -1851,12 +1865,12 @@ class Create extends \Magento\Framework\DataObject implements \Magento\Checkout\
 
         switch ($addressType) {
             case \Magento\Quote\Model\Quote\Address::ADDRESS_TYPE_BILLING:
-                if (is_null($customer->getDefaultBilling())) {
+                if ($customer->getDefaultBilling() === null) {
                     $customerAddress->setIsDefaultBilling(true);
                 }
                 break;
             case \Magento\Quote\Model\Quote\Address::ADDRESS_TYPE_SHIPPING:
-                if (is_null($customer->getDefaultShipping())) {
+                if ($customer->getDefaultShipping() === null) {
                     $customerAddress->setIsDefaultShipping(true);
                 }
                 break;
@@ -1947,21 +1961,17 @@ class Create extends \Magento\Framework\DataObject implements \Magento\Checkout\
      */
     protected function _validate()
     {
-        $customerId = $this->getSession()->getCustomerId();
-        if (is_null($customerId)) {
-            throw new \Magento\Framework\Exception\LocalizedException(__('Please select a customer'));
-        }
-
         if (!$this->getSession()->getStore()->getId()) {
             throw new \Magento\Framework\Exception\LocalizedException(__('Please select a store'));
         }
         $items = $this->getQuote()->getAllItems();
 
-        if (count($items) == 0) {
+        if (count($items) === 0) {
             $this->_errors[] = __('Please specify order items.');
         }
 
         foreach ($items as $item) {
+            /** @var \Magento\Quote\Model\Quote\Item $item */
             $messages = $item->getMessage(false);
             if ($item->getHasError() && is_array($messages) && !empty($messages)) {
                 $this->_errors = array_merge($this->_errors, $messages);
@@ -1990,7 +2000,7 @@ class Create extends \Magento\Framework\DataObject implements \Magento\Checkout\
         }
         if (!empty($this->_errors)) {
             foreach ($this->_errors as $error) {
-                $this->messageManager->addError($error);
+                $this->messageManager->addErrorMessage($error);
             }
             throw new \Magento\Framework\Exception\LocalizedException(__('Validation is failed.'));
         }
@@ -1999,26 +2009,13 @@ class Create extends \Magento\Framework\DataObject implements \Magento\Checkout\
     }
 
     /**
-     * Retrieve or generate new customer email.
+     * Retrieve new customer email.
      *
      * @return string
      */
     protected function _getNewCustomerEmail()
     {
-        $email = $this->getData('account/email');
-        if (empty($email)) {
-            $host = $this->_scopeConfig->getValue(
-                self::XML_PATH_DEFAULT_EMAIL_DOMAIN,
-                \Magento\Store\Model\ScopeInterface::SCOPE_STORE
-            );
-            $account = time();
-            $email = $account . '@' . $host;
-            $account = $this->getData('account');
-            $account['email'] = $email;
-            $this->setData('account', $account);
-        }
-
-        return $email;
+        return $this->getData('account/email');
     }
 
     /**
